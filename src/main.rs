@@ -1,5 +1,5 @@
-use chrono::{DateTime, Datelike, NaiveTime, Offset, TimeZone, Utc};
-use chrono_tz::Tz;
+use chrono::{DateTime, NaiveTime, Offset, Utc};
+use chrono_tz::{OffsetComponents, Tz};
 use rmcp::{
     ServerHandler, ServiceExt, handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters, model::*, schemars, tool, tool_handler, tool_router,
@@ -65,24 +65,13 @@ pub struct TimeConversionResult {
 // ---------- 辅助函数 ----------
 
 /// 判断某时刻是否处于夏令时：
-/// DST 生效时偏移量一定大于当年 1 月/7 月偏移中的较小者（标准时偏移），
-/// 同时兼容南半球（如悉尼 1 月是 DST）。
-fn is_dst(tz: Tz, dt: &DateTime<Tz>) -> bool {
-    let year = dt.year();
-    let jan = Utc
-        .with_ymd_and_hms(year, 1, 15, 12, 0, 0)
-        .unwrap()
-        .with_timezone(&tz);
-    let jul = Utc
-        .with_ymd_and_hms(year, 7, 15, 12, 0, 0)
-        .unwrap()
-        .with_timezone(&tz);
-    let std_off = jan
-        .offset()
-        .fix()
-        .local_minus_utc()
-        .min(jul.offset().fix().local_minus_utc());
-    dt.offset().fix().local_minus_utc() > std_off
+fn is_dst(dt: &DateTime<Tz>) -> bool {
+    dt.offset().dst_offset() > chrono::Duration::zero()
+}
+
+/// UTC 偏移为零时使用 `Z`，否则使用 `+HH:MM` / `-HH:MM`。
+fn format_rfc3339(dt: &DateTime<Tz>) -> String {
+    dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 // 对应 Python: raise ValueError(f"Invalid timezone: ...")
@@ -102,6 +91,12 @@ fn json_result<T: Serialize>(value: T) -> Result<CallToolResult, ErrorData> {
 #[derive(Clone)]
 pub struct TimeServer {
     tool_router: ToolRouter<TimeServer>,
+}
+
+impl Default for TimeServer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // 说明：文档示例中路由可以是自由函数（不存字段），
@@ -137,8 +132,8 @@ impl TimeServer {
 
         json_result(TimeResult {
             timezone: tz_name,
-            datetime: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            is_dst: is_dst(tz, &now),
+            datetime: format_rfc3339(&now),
+            is_dst: is_dst(&now),
         })
     }
 
@@ -180,13 +175,13 @@ impl TimeServer {
         json_result(TimeConversionResult {
             source: TimeResult {
                 timezone: args.source_timezone,
-                datetime: source_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                is_dst: is_dst(source_tz, &source_dt),
+                datetime: format_rfc3339(&source_dt),
+                is_dst: is_dst(&source_dt),
             },
             target: TimeResult {
                 timezone: args.target_timezone,
-                datetime: target_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                is_dst: is_dst(target_tz, &target_dt),
+                datetime: format_rfc3339(&target_dt),
+                is_dst: is_dst(&target_dt),
             },
             // 对应 Python: f"{diff:+}h"，如 +5.75h、+1h、-3h
             time_difference: format!("{diff_hours:+}h"),
